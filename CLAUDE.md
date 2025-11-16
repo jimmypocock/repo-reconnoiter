@@ -42,9 +42,13 @@ RepoReconnoiter is an **API-only backend service** that analyzes GitHub trending
 - **Job Scheduling**: Solid Queue recurring tasks (see `config/recurring.yml`)
 - **AI Provider**: OpenAI (gpt-5-mini for categorization, gpt-5 for comparisons and deep analysis)
 - **Authentication**:
-  - API: JWT tokens (via `/api/v1/auth/exchange`)
-  - Mission Control: Devise + OmniAuth GitHub (invite-only whitelist)
-  - Session Exchange: JWT → Rails session for Mission Control access
+  - **Two-Layer API Auth**:
+    - Layer 1 (App-to-App): API Keys via `Authorization: Bearer <API_KEY>` header - required for ALL endpoints
+    - Layer 2 (User-Specific): JWT tokens via `X-User-Token` header - for user-specific actions
+    - Generate API key: `bin/rails api_keys:generate NAME="Insomnia Testing"` (see `lib/tasks/api_keys.rake`)
+    - Exchange GitHub OAuth token for JWT: `POST /api/v1/auth/exchange`
+  - **Mission Control**: Devise + OmniAuth GitHub (invite-only whitelist)
+  - **Session Exchange**: JWT → Rails session for Mission Control access via `/session_exchange?token=JWT`
 - **Rate Limiting**: Rack::Attack (25/day per user, 5/day per IP)
 - **Deployment**: Render.com (Starter plan - $14/month)
 - **Hosting**:
@@ -99,6 +103,17 @@ bin/bundler-audit         # Check for vulnerable gem versions
 ```bash
 bin/rails solid_queue:start    # Start Solid Queue worker
 bin/rails solid_queue:stop     # Stop Solid Queue worker
+```
+
+### API Keys
+
+```bash
+bin/rails api_keys:generate NAME="Insomnia Testing"              # Generate new API key
+bin/rails api_keys:generate NAME="Production" EMAIL="user@example.com"  # Generate key for specific user
+bin/rails api_keys:list                                          # List all API keys
+bin/rails api_keys:revoke ID=123                                 # Revoke an API key
+bin/rails api_keys:stats                                         # Show usage statistics
+bin/rails api_keys:cleanup                                       # Delete old revoked keys (90+ days)
 ```
 
 ### Production (Render.com)
@@ -499,6 +514,24 @@ Currently not needed - WORD_SIMILARITY is fast enough for small datasets.
 
 ### Authentication & Authorization
 
+**Two-Layer API Authentication:**
+
+All API endpoints (`/api/v1/*`) require TWO layers of authentication:
+
+1. **Layer 1 - API Key (App-to-App Authentication)**:
+   - Header: `Authorization: Bearer <API_KEY>`
+   - Required for ALL API endpoints (enforced by `BaseController#authenticate_api_key!`)
+   - Generate: `bin/rails api_keys:generate NAME="Insomnia Testing"`
+   - Keys are BCrypt-hashed, raw key shown only once
+   - Manage with rake tasks: `api_keys:list`, `api_keys:revoke`, `api_keys:stats` (see `lib/tasks/api_keys.rake`)
+
+2. **Layer 2 - User Token (User-Specific Authentication)**:
+   - Header: `X-User-Token: <JWT>`
+   - Required for user-specific endpoints (e.g., creating comparisons)
+   - Obtain via `POST /api/v1/auth/exchange` (exchange GitHub OAuth token for JWT)
+   - JWT valid for 24 hours (configurable in `JsonWebToken::EXPIRATION_TIME`)
+   - Create manually in console: `token = JsonWebToken.encode(user_id: user.id); puts token`
+
 **Invite-Only Whitelist System:**
 
 - Users authenticate via GitHub OAuth (Devise + OmniAuth)
@@ -704,6 +737,12 @@ end
   - `ci:security`: Run security scans (Brakeman, Bundler Audit, Importmap)
   - `ci:lint`: Run RuboCop linter
   - `ci:test`: Run all tests (unit + system)
+- `lib/tasks/api_keys.rake`: API key management (for testing with Insomnia/Postman)
+  - `api_keys:generate` (NAME='...' [EMAIL='...']): Generate new API key (optionally for specific user)
+  - `api_keys:list`: List all API keys with usage stats
+  - `api_keys:revoke` (ID=123): Revoke an API key
+  - `api_keys:stats`: Show API key usage statistics
+  - `api_keys:cleanup`: Delete old revoked keys (90+ days)
 - `lib/tasks/analyze.rake`: Repository analysis tasks
   - `analyze:basic` (REPO='owner/name'): Run basic analysis on a single repo (Tier 1, gpt-5-mini)
   - `analyze:deep` (REPO='owner/name'): Run deep analysis on a single repo (Tier 2, gpt-5, cheaper with 272K context)
@@ -824,6 +863,7 @@ end
 - `CLARITY_PROJECT_ID` - Microsoft Clarity analytics project ID
 - `COMPARISON_SIMILARITY_THRESHOLD` - Query fuzzy matching threshold (default: 0.8)
 - `COMPARISON_CACHE_DAYS` - Cache TTL in days (default: 7)
+- `CABLE_ALLOWED_ORIGINS` - Additional WebSocket origins for testing (comma-separated, e.g., "null" for Insomnia/Postman)
 - `RAILS_LOG_LEVEL` - Logging verbosity (default: info)
 
 See `.env.example` for complete documentation.
